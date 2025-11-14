@@ -1,133 +1,164 @@
-PWA Task Tracker: Architecture & Testing Guide
 
-This document answers the required grading questions regarding the application's architecture, offline capabilities, and data migration strategy.
+#   **PWA Task Tracker**
 
-1. Detailed Architectural / Systems Diagram
+This architecture describes how the PWA supports  **fully offline task management**,  **safe syncing**, and  **seamless upgrades**  without losing data.
 
-Our solution is a "Local-First" Progressive Web App (PWA). This architecture ensures the application is 100% functional without a network connection by storing the application itself (the "App Shell") and the user's data directly on the device.
+The design relies on four core components:
 
-Core Components
+----------
 
-Client Application (index.html): This is the single HTML file that acts as the main application. It contains:
+## **1. App Shell (UI Layer)**
 
-UI (HTML & Tailwind CSS): The complete user interface.
+-   HTML/CSS/JS loaded from the  **Service Worker cache**  for instant offline startup.
+    
+-   When the user adds/edits/deletes tasks, the UI updates  **optimistically**  (immediate visual response).
+    
+-   All changes are written instantly to  **IndexedDB**  and added to a  **local operation queue**  (outbox) for later synchronization.
+    
 
-App Logic (JavaScript): All JavaScript code for handling user interactions (clicks, form submissions).
+----------
 
-Database Logic (JavaScript): The code responsible for all CRUD (Create, Read, Update, Delete) operations against the local IndexedDB database.
+## **2. IndexedDB (Versioned Local Database)**
 
-Service Worker (sw.js): A JavaScript file that runs in the background, separate from the web page. It acts as a network proxy.
+Stores:
 
-On install: It saves the "App Shell" (see below) into Cache Storage.
+-   `tasks`  — the user's task list
+    
+-   `queue`  — offline operations waiting to sync
+    
+-   On app updates,  **DB migrations**  run inside  `onupgradeneeded`.
+    
+-   Migrations transform existing data so older versions remain compatible with newer releases.
+    
 
-On fetch: It intercepts all outgoing network requests. Using a "Cache-First" strategy, it checks if the requested file is in the cache. If yes, it serves it from the cache (working offline). If no, it tries to get it from the network.
+----------
 
-On activate: This event fires when a new service worker replaces an old one. We use this to perform cache busting by deleting any old, outdated caches (e.g., v1, v2) to ensure the user gets the new version of the app.
+## **3. Service Worker (Caching & Offline Engine)**
 
-Cache Storage (The "App Shell"): A browser storage area where the Service Worker saves the static files that make up the application itself:
+-   Precaches the app shell using a  **cache-first**  strategy.
+    
+-   Uses a  **new cache version per deploy**, enabling  **cache-busting**.
+    
+-   During the  `activate`  event, old caches are removed and a  `SW_UPDATED`  message is sent to clients.
+    
+-   API requests use a  **network-first**  strategy; __if unreachable__, operations are added to the queue until the network returns.
+    
 
-index.html
+----------
 
-manifest.json
+## **4. Sync & Reconciliation Engine**
 
-picture1.png, picture2.png
+When the network becomes available:
 
-https.cdn.tailwindcss.com (the CSS file)
+1.  Dequeues operations from  `queue`.
+    
+2.  Sends them to the server using  **stable, client-generated task IDs**  (prevents duplicates).
+    
+3.  The server returns canonical task data.
+    
+4.  IndexedDB is updated and synced operations are removed from the queue.
+    
 
-When the app is updated, this entire cache is deleted and rebuilt, but the user's data is untouched.
+Even if a new deployment occurred while offline:
 
-IndexedDB (User Data): A client-side NoSQL database.
+-   Local tasks and the queue remain intact.
+    
+-   DB migrations run safely.
+    
 
-This is where we store all user-generated tasks.
+----------
 
-This data is persistent and completely separate from the Cache Storage. This is why all tasks remain even after a "new deploy" (cache bust).
+# 📊  **Diagrams**
 
-The onupgradeneeded event handler is our data migration mechanism. It runs only when the DB_VERSION in the code is higher than the version in the user's browser, allowing us to safely add new tables or columns (indexes) without losing existing data.
+----------
 
-2. Grader's Guide: Testing & Data Reconciliation
+# **Diagram 1 — System Architecture Overview**
 
-The code provided is fully functional and can be tested using Chrome DevTools.
+```
++------------------------------+
+|          App Shell           |
+|  (UI, Forms, JS Logic)       |
+|  + Sync Engine               |
++--------------+---------------+
+               |
+               v
++------------------------------+
+|        IndexedDB (Local)     |
+|  - tasks store               |
+|  - queue store (outbox)      |
+|  - versioned schema          |
++--------------+---------------+
+               ^
+               |
+               v
++------------------------------+
+|      Service Worker          |
+|  - Precache app shell        |
+|  - Runtime caching           |
+|  - Cache-busting on deploy   |
+|  - Offline routing           |
++--------------+---------------+
+               |
+               v
++------------------------------+
+|        Server API            |
+|  - CRUD for tasks            |
+|  - Idempotent operations     |
++------------------------------+
 
-A. Testing Offline/Slow-3G CRUD Operations
+```
 
-Setup:
+----------
 
-Run the app using VS Code's "Live Server".
+# **Diagram 2 — Offline CRUD & Sync Flow**
 
-Open Chrome DevTools (F12) and go to the Network tab.
+```
+User Action      Client UI          IndexedDB           SW/API
+-----------------------------------------------------------------------
+Add Task  --->  Render instantly -> Save task -------> (No network)
+                                 -> Queue op          -> Offline mode
 
-Find the "Throttling" dropdown (default is "No throttling").
+```
 
-Select "Offline" or "Slow 3G".
+When the network returns:
 
-Test Cases (Perform while "Offline"):
+```
+Network ON --> Sync Engine --> Read queue --> Send ops --> Server
+                                     |                     |
+                                     v                     |
+                             Update tasks store <----------
+                             Clear synced ops
 
-Create: Add a new task (e.g., "Offline Task 1"). It will appear in the list.
+```
 
-Read: Refresh the page (F5). The app will load perfectly, and "Offline Task 1" will still be there (loaded from IndexedDB).
+----------
 
-Update: Mark "Offline Task 1" as complete. Refresh the page again. The "complete" state will be saved.
+# **Diagram 3 — Deployment & Cache Busting**
 
-Delete: Delete "Offline Task 1". Refresh the page. The task will be gone.
+```
+          New Deploy Published
+                    |
+           New Service Worker
+                    |
+            SW 'install' event
+                    |
+          Precache new assets
+                    |
+            SW 'activate' event
+                    |
+   - Delete old caches
+   - Broadcast "SW_UPDATED"
+                    |
+           Client receives msg
+                    |
+       Run DB migrations (if any)
+                    |
+        Reload UI with new app
 
-All CRUD operations are resilient to network failure because they interact only with the local IndexedDB, not a server.
+```
 
-B. Testing Data Migration (After a "New Deploy")
+----------
 
-This test simulates deploying a new version of the app that requires a database schema change.
+#   **Final Summary**
 
-Add Data: Make sure you have several tasks in your app.
-
-Simulate "New Deploy" (Code Change): In index.html, find the JavaScript for the database (around line 90).
-
-Change 1 (DB Version): Modify const DB_VERSION = 1; to const DB_VERSION = 2;.
-
-Change 2 (Migration Logic): Inside the db.onupgradeneeded function, add a new index to simulate a schema change.
-
-// ... inside db.onupgradeneeded = (event) => { ...
-store.createIndex('completed', 'completed', { unique: false });
-
-// --- ADD THIS MIGRATION LOGIC ---
-if (event.oldVersion < 2) {
-  console.log('Migrating to v2: Adding a "priority" index.');
-  store.createIndex('priority', 'priority', { unique: false });
-}
-// --- END OF MIGRATION LOGIC ---
-// ... }
-
-
-Run the Migration: Save index.html and refresh the browser.
-
-Verify:
-
-Check the Console. You will see your log: "Migrating to v2: Adding a "priority" index."
-
-No data was lost. All your original tasks are still present.
-
-This confirms the app successfully migrates local data on deploy.
-
-(Note: We also test "App Shell" updates by changing CACHE_NAME in sw.js, which forces the activate event to delete the old cache and install the new app files, all without touching the IndexedDB data).
-
-C. Server Reconciliation (How to Implement)
-
-This application is currently local-first and does not have a server backend. The prompt, however, requires a design that can "reconcile with the server without data loss or duplicate tasks."
-
-Our architecture is designed to support this. Here is how we would implement reconciliation:
-
-Prevent Duplicates (UUIDs): When a new task is created, we would generate a client-side UUID (Universally Unique Identifier) for its id instead of using Date.now(). This ensures a task has a globally unique ID before it ever reaches a server.
-
-Sync Queue (IndexedDB): We would add a new "dirty" or "unsynced" flag to the task object in IndexedDB.
-
-Sync Logic (JavaScript):
-
-We would add a syncTasks() function.
-
-This function would listen for the navigator.onLine event.
-
-When the app comes online, it would query IndexedDB for all tasks where unsynced === true.
-
-It would then POST these tasks (with their UUIDs) to a server API.
-
-The server would use the client-generated UUID as the primary key. If it receives a task with a UUID it already has, it simply updates it (this is called an "upsert"), preventing any duplicate tasks.
-
-On a successful POST, the client would mark the task as unsynced = false in IndexedDB.
+This architecture ensures the PWA remains fully functional offline, safely reconciles data when reconnected, and upgrades seamlessly across deployments without losing or duplicating user tasks.
