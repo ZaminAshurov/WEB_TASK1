@@ -1,0 +1,22 @@
+{
+"name": "Offline Task Tracker",
+"short_name": "Tasks",
+"description": "A simple task tracker that works offline.",
+"start_url": "/",
+"display": "standalone",
+"background_color": "#ffffff",
+"theme_color": "#4F46E5",
+"icons": [
+{
+"src": "https://www.google.com/search?q=https://placehold.co/192x192/4F46E5/FFFFFF%3Ftext%3DTasks",
+"sizes": "192x192",
+"type": "image/png",
+"purpose": "any maskable"
+},
+{
+"src": "https://www.google.com/search?q=https://placehold.co/512x512/4F46E5/FFFFFF%3Ftext%3DTasks",
+"sizes": "512x512",
+"type": "image/png"
+}
+]
+}
